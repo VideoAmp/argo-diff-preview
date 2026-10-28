@@ -354,9 +354,15 @@ func (a *APIOperations) AppsetGenerate(resource *unstructured.Unstructured, temp
 	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", a.connection.authToken))
 	req.Header.Set("Content-Type", "application/json")
 
-	// Create HTTP client with TLS config
+	// The generate call runs the appset's generators in the ephemeral ArgoCD —
+	// for git generators over large repos the repo-server cold fetch can take
+	// minutes (observed 2-5 min for a ~630 MB tree on shared runners). A 60s
+	// per-attempt client timeout kills every retry before the fetch completes
+	// (5x60s+backoff ≈ 305s ceiling), turning borderline fetches into
+	// whole-render failures. 5 minutes absorbs the observed tail; the retry
+	// loop upstream of this call still bounds the truly-wedged case.
 	client := &http.Client{
-		Timeout: 60 * time.Second,
+		Timeout: 5 * time.Minute,
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{
 				InsecureSkipVerify: true,
