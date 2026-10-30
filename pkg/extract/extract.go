@@ -42,6 +42,7 @@ func RenderApplicationsFromBothBranches(
 	targetApps []argoapplication.ArgoResource,
 	prefix string,
 	deleteAfterProcessing bool,
+	skipFailedApps bool,
 ) ([]ExtractedApp, []ExtractedApp, time.Duration, error) {
 	startTime := time.Now()
 
@@ -67,7 +68,7 @@ func RenderApplicationsFromBothBranches(
 	apps := append(baseApps, targetApps...)
 
 	log.Debug().Msg("Applied manifest for both branches")
-	extractedBaseApps, extractedTargetApps, err := getResourcesFromApps(argocd, apps, timeout, maxConcurrency, prefix, deleteAfterProcessing)
+	extractedBaseApps, extractedTargetApps, err := getResourcesFromApps(argocd, apps, timeout, maxConcurrency, prefix, deleteAfterProcessing, skipFailedApps)
 	if err != nil {
 		return nil, nil, time.Since(startTime), fmt.Errorf("failed to get resources: %w", err)
 	}
@@ -84,6 +85,7 @@ func getResourcesFromApps(
 	maxConcurrency uint,
 	prefix string,
 	deleteAfterProcessing bool,
+	skipFailedApps bool,
 ) ([]ExtractedApp, []ExtractedApp, error) {
 	startTime := time.Now()
 
@@ -99,10 +101,7 @@ func getResourcesFromApps(
 	log.Info().Msgf("🤖 Rendering Applications (timeout in %d seconds)", timeout)
 
 	// Process apps in parallel with a worker pool
-	results := make(chan struct {
-		app ExtractedApp
-		err error
-	}, len(apps))
+	results := make(chan appResult, len(apps))
 
 	// Create a semaphore channel to limit concurrent workers
 	// If maxConcurrency is 0, use len(apps) to effectively have no limit
@@ -149,20 +148,18 @@ func getResourcesFromApps(
 
 			// If timeout is reached, return an empty extracted app and an error
 			if timeRemaining <= 0 {
-				results <- struct {
-					app ExtractedApp
-					err error
-				}{app: ExtractedApp{}, err: fmt.Errorf("timeout reached before starting to render application: %s", app.GetLongName())}
+				results <- appResult{
+					app:    ExtractedApp{},
+					source: app,
+					err:    fmt.Errorf("timeout reached before starting to render application: %s", app.GetLongName()),
+				}
 				<-sem
 				return
 			}
 
 			// Get resources from application
 			result, k8sName, err := getResourcesFromApp(argocd, app, timeRemaining, prefix, clusterScopedResources)
-			results <- struct {
-				app ExtractedApp
-				err error
-			}{app: result, err: err}
+			results <- appResult{app: result, source: app, err: err}
 			if err == nil {
 				renderedApps.Add(1)
 			}
@@ -183,37 +180,27 @@ func getResourcesFromApps(
 	}
 
 	// Collect results
-	extractedBaseApps := make([]ExtractedApp, 0, len(apps))
-	extractedTargetApps := make([]ExtractedApp, 0, len(apps))
-	var firstError error
-
+	resultSlice := make([]appResult, 0, len(apps))
 	for range len(apps) {
-		result := <-results
-		if result.err != nil {
-			if firstError == nil {
-				firstError = result.err
-			}
-			log.Error().Err(result.err).Msg("❌ Failed to extract application:")
-			continue
-		}
-		switch result.app.Branch {
-		case git.Base:
-			extractedBaseApps = append(extractedBaseApps, result.app)
-		case git.Target:
-			extractedTargetApps = append(extractedTargetApps, result.app)
-		default:
-			return nil, nil, fmt.Errorf("unknown branch type: '%s'", result.app.Branch)
-		}
+		resultSlice = append(resultSlice, <-results)
 	}
 
 	// Signal progress reporting to stop
 	close(progressDone)
 
+	extractedBaseApps, extractedTargetApps, failedApps, firstError := collectAppResults(resultSlice, skipFailedApps)
 	if firstError != nil {
 		return nil, nil, firstError
 	}
-
-	log.Info().Msgf("🎉 Rendered all %d applications", renderedApps.Load())
+	if skipFailedApps && len(failedApps) > 0 {
+		for _, failure := range failedApps {
+			log.Warn().Msgf("⏭️ Skipping application %s: %s", failure.source.GetLongName(), failure.err)
+		}
+		log.Warn().Msgf("🏁 Tolerant render completed: skipped=%d rendered_base=%d rendered_target=%d", len(failedApps), len(extractedBaseApps), len(extractedTargetApps))
+		log.Info().Msgf("🎉 Rendered %d applications (%d skipped due to render failure)", renderedApps.Load(), len(failedApps))
+	} else {
+		log.Info().Msgf("🎉 Rendered all %d applications", renderedApps.Load())
+	}
 
 	// Wait for all goroutines to complete (including deletions)
 	log.Info().Msg("🧼 Waiting for all application deletions to complete...")
@@ -224,6 +211,85 @@ func getResourcesFromApps(
 	log.Info().Msgf("🤖 Got all resources from %d applications from %s-branch and got %d from %s-branch in %s", len(extractedBaseApps), git.Base, len(extractedTargetApps), git.Target, duration.Round(time.Second))
 
 	return extractedBaseApps, extractedTargetApps, nil
+}
+
+// appResult is the per-application outcome of one render worker.
+type appResult struct {
+	app    ExtractedApp
+	source argoapplication.ArgoResource
+	err    error
+}
+
+// appKey identifies an application across branches (same ApplicationSet
+// file + same Application name) so a failure on one side can drop the
+// app's extraction from the other side too.
+func appKey(name, fileName string) string {
+	return fileName + "|" + name
+}
+
+// collectAppResults folds worker outcomes into per-branch extraction lists.
+//
+// Strict mode (default, upstream behavior): the first failure aborts the
+// whole render — every successful extraction is discarded.
+//
+// Tolerant mode (--skip-failed-apps): failures are collected and returned
+// instead of poisoning the run; every other application keeps its place in
+// the diff. An app that failed on EITHER branch is dropped from BOTH
+// sides — an app that rendered only on the base branch would otherwise
+// diff as "deleted by this PR" — so the diff never fabricates changes for
+// a broken app, and the caller logs each skipped app for the report.
+func collectAppResults(results []appResult, tolerateFailures bool) (base, target []ExtractedApp, failed []appResult, firstErr error) {
+	base = make([]ExtractedApp, 0, len(results))
+	target = make([]ExtractedApp, 0, len(results))
+	failedKeys := make(map[string]bool)
+
+	for _, result := range results {
+		if result.err != nil {
+			if !tolerateFailures {
+				if firstErr == nil {
+					firstErr = result.err
+				}
+				log.Error().Err(result.err).Msg("❌ Failed to extract application:")
+				continue
+			}
+			failed = append(failed, result)
+			failedKeys[appKey(result.source.Name, result.source.FileName)] = true
+			continue
+		}
+		switch result.app.Branch {
+		case git.Base:
+			base = append(base, result.app)
+		case git.Target:
+			target = append(target, result.app)
+		default:
+			return nil, nil, nil, fmt.Errorf("unknown branch type: '%s'", result.app.Branch)
+		}
+	}
+
+	if len(failedKeys) > 0 {
+		keptBase := make([]ExtractedApp, 0, len(base))
+		for _, app := range base {
+			if !failedKeys[appKey(app.Name, app.SourcePath)] {
+				keptBase = append(keptBase, app)
+			}
+		}
+		keptTarget := make([]ExtractedApp, 0, len(target))
+		for _, app := range target {
+			if !failedKeys[appKey(app.Name, app.SourcePath)] {
+				keptTarget = append(keptTarget, app)
+			}
+		}
+		base, target = keptBase, keptTarget
+	}
+
+	// Strict mode discards every successful extraction on any failure —
+	// same as upstream, enforced here so a caller can never mistake the
+	// partial lists for a usable render.
+	if !tolerateFailures && firstErr != nil {
+		return nil, nil, nil, firstErr
+	}
+
+	return base, target, failed, firstErr
 }
 
 // getResourcesFromApp extracts a single application from the cluster

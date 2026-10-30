@@ -89,6 +89,7 @@ var (
 	DefaultTraverseAppOfApps                    = false
 	DefaultFailOnDuplicateGeneratedApplications = false
 	DefaultRepoServerAddress                    = ""
+	DefaultSkipFailedApps                       = false
 )
 
 // RawOptions holds the raw CLI/env inputs - used only for parsing
@@ -142,6 +143,7 @@ type RawOptions struct {
 	TraverseAppOfApps                    bool   `mapstructure:"traverse-app-of-apps"`
 	FailOnDuplicateGeneratedApplications bool   `mapstructure:"fail-on-duplicate-generated-applications"`
 	RepoServerAddress                    string `mapstructure:"repo-server-address"`
+	SkipFailedApps                       bool   `mapstructure:"skip-failed-apps"`
 }
 
 // Config is the final, validated, ready-to-use configuration
@@ -189,6 +191,7 @@ type Config struct {
 	TraverseAppOfApps                    bool
 	FailOnDuplicateGeneratedApplications bool
 	RepoServerAddress                    string
+	SkipFailedApps                       bool
 
 	// Parsed/processed fields - no "parsed" prefix needed
 	FileRegex           *regexp.Regexp
@@ -288,6 +291,7 @@ func Parse() *Config {
 	viper.SetDefault("traverse-app-of-apps", DefaultTraverseAppOfApps)
 	viper.SetDefault("fail-on-duplicate-generated-applications", DefaultFailOnDuplicateGeneratedApplications)
 	viper.SetDefault("repo-server-address", DefaultRepoServerAddress)
+	viper.SetDefault("skip-failed-apps", DefaultSkipFailedApps)
 
 	// Basic flags
 	rootCmd.Flags().BoolP("debug", "d", false, "Activate debug mode")
@@ -350,6 +354,7 @@ func Parse() *Config {
 	rootCmd.Flags().Bool("traverse-app-of-apps", DefaultTraverseAppOfApps, "Recursively render child Applications discovered in rendered manifests (app-of-apps pattern). Only supported with --render-method=repo-server-api")
 	rootCmd.Flags().Bool("fail-on-duplicate-generated-applications", DefaultFailOnDuplicateGeneratedApplications, "Fail when a single ApplicationSet generates multiple Applications with the same name")
 	rootCmd.Flags().String("repo-server-address", DefaultRepoServerAddress, "Address of the Argo CD repo server (host:port). Connects directly instead of port-forwarding. Requires --render-method=repo-server-api")
+	rootCmd.Flags().Bool("skip-failed-apps", DefaultSkipFailedApps, "Skip applications that fail to render instead of aborting: the diff covers every other application, each skipped one is logged, and a failed app is dropped from both branches (all-or-nothing per app)")
 
 	// Check if version flag was specified directly
 	for _, arg := range os.Args[1:] {
@@ -438,6 +443,7 @@ func (o *RawOptions) ToConfig() (*Config, error) {
 		TraverseAppOfApps:                    o.TraverseAppOfApps,
 		FailOnDuplicateGeneratedApplications: o.FailOnDuplicateGeneratedApplications,
 		RepoServerAddress:                    o.RepoServerAddress,
+		SkipFailedApps:                       o.SkipFailedApps,
 	}
 
 	var err error
@@ -818,6 +824,9 @@ func (o *Config) LogConfig() {
 	}
 	if o.RepoServerAddress != DefaultRepoServerAddress {
 		log.Info().Msgf("✨ - repo-server-address: %s", o.RepoServerAddress)
+	}
+	if o.SkipFailedApps {
+		log.Info().Msg("✨ - skip-failed-apps: true")
 	}
 	if o.Title != DefaultTitle {
 		log.Info().Msgf("✨ - title: %s", o.Title)

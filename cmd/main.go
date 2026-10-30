@@ -359,6 +359,7 @@ func run(cfg *Config) error {
 			targetApps.SelectedApps,
 			uniqueID,
 			deleteAfterProcessing,
+			cfg.SkipFailedApps,
 		)
 	}
 	if err != nil {
