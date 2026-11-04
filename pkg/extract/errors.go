@@ -9,22 +9,23 @@ type ErrorKind string
 
 // for errors from Argo CD
 const (
-	ErrorNoClusterWithName    ErrorKind = "there are no clusters with this name"
-	ErrorHelmTemplate         ErrorKind = "helm template ."
-	ErrorAuthRequired         ErrorKind = "authentication required"
-	ErrorAuthFailed           ErrorKind = "authentication failed"
-	ErrorOCIRegistry          ErrorKind = "error logging into OCI registry"
-	ErrorPathNotExist         ErrorKind = "path does not exist"
-	ErrorYAMLToJSON           ErrorKind = "error converting YAML to JSON"
-	ErrorHelmTemplateDesc     ErrorKind = "Unknown desc = `helm template ."
-	ErrorKustomizeBuild       ErrorKind = "Unknown desc = `kustomize build"
-	ErrorUnableToResolve      ErrorKind = "Unknown desc = Unable to resolve"
-	ErrorInvalidChartRepo     ErrorKind = "is not a valid chart repository or cannot be reached"
-	ErrorRepoNotFound         ErrorKind = "Unknown desc = repository not found"
-	ErrorCommitSHA            ErrorKind = "to a commit SHA"
-	ErrorFetchChart           ErrorKind = "error fetching chart: failed to fetch chart: failed to get command args to log"
-	ErrorClusterVersionFailed ErrorKind = "ComparisonError: Failed to load target state: failed to get cluster version for cluster"
-	ErrorClusterScopeRBAC     ErrorKind = "forbidden: User \"system:serviceaccount:"
+	ErrorNoClusterWithName      ErrorKind = "there are no clusters with this name"
+	ErrorHelmTemplate           ErrorKind = "helm template ."
+	ErrorAuthRequired           ErrorKind = "authentication required"
+	ErrorAuthFailed             ErrorKind = "authentication failed"
+	ErrorOCIRegistry            ErrorKind = "error logging into OCI registry"
+	ErrorPathNotExist           ErrorKind = "path does not exist"
+	ErrorYAMLToJSON             ErrorKind = "error converting YAML to JSON"
+	ErrorHelmTemplateDesc       ErrorKind = "Unknown desc = `helm template ."
+	ErrorKustomizeBuild         ErrorKind = "Unknown desc = `kustomize build"
+	ErrorUnableToResolve        ErrorKind = "Unknown desc = Unable to resolve"
+	ErrorInvalidChartRepo       ErrorKind = "is not a valid chart repository or cannot be reached"
+	ErrorRepoNotFound           ErrorKind = "Unknown desc = repository not found"
+	ErrorCommitSHA              ErrorKind = "to a commit SHA"
+	ErrorFetchChart             ErrorKind = "error fetching chart: failed to fetch chart: failed to get command args to log"
+	ErrorClusterVersionFailed   ErrorKind = "ComparisonError: Failed to load target state: failed to get cluster version for cluster"
+	ErrorClusterScopeRBAC       ErrorKind = "forbidden: User \"system:serviceaccount:"
+	ErrorSetAppInstanceTracking ErrorKind = "failed to set app instance tracking info"
 )
 
 var errorMessages = []string{
@@ -44,6 +45,7 @@ var errorMessages = []string{
 	string(ErrorFetchChart),
 	string(ErrorClusterVersionFailed),
 	string(ErrorClusterScopeRBAC),
+	string(ErrorSetAppInstanceTracking),
 }
 
 var helpMessages = map[ErrorKind]string{
