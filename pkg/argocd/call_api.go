@@ -236,9 +236,21 @@ func (a *APIOperations) GetManifests(appName string) ([]unstructured.Unstructure
 	// Set authorization header with bearer token
 	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", a.connection.authToken))
 
-	// Create HTTP client with TLS config to handle redirects
+	// Create HTTP client with TLS config to handle redirects.
+	// The /manifests GET triggers repo-server manifest generation server-side,
+	// and the api-server holds the request up to its repo-server RPC deadline
+	// (900s in VideoAmp's ephemeral install — raised from the 60s default via
+	// the workflow's values-override). A short client timeout cuts requests
+	// that are merely queued behind the repo-server's per-repo lock during
+	// fleet renders: the caller then refreshes the app (requeueing another
+	// generation behind the same lock) and retries, amplifying the very queue
+	// it is waiting on — observed live as 99-106 cut/refresh/requeue cycles
+	// per stalled run. 960s sits just above the 900s server deadline so a
+	// slow-but-progressing generation completes on the first try; when the
+	// server itself gives up, its error response reaches the client and is
+	// classified by the caller's timeout/error lists.
 	client := &http.Client{
-		Timeout: 30 * time.Second,
+		Timeout: 16 * time.Minute,
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{
 				InsecureSkipVerify: true,
