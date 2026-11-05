@@ -43,23 +43,23 @@ func RenderApplicationsFromBothBranches(
 	prefix string,
 	deleteAfterProcessing bool,
 	skipFailedApps bool,
-) ([]ExtractedApp, []ExtractedApp, time.Duration, error) {
+) ([]ExtractedApp, []ExtractedApp, *RenderReport, time.Duration, error) {
 	startTime := time.Now()
 
 	if err := verifyNoDuplicateAppIds(baseApps); err != nil {
-		return nil, nil, time.Since(startTime), err
+		return nil, nil, nil, time.Since(startTime), err
 	}
 
 	if err := verifyNoDuplicateAppIds(targetApps); err != nil {
-		return nil, nil, time.Since(startTime), err
+		return nil, nil, nil, time.Since(startTime), err
 	}
 
 	if err := VerifyNoApplicationSets(baseApps); err != nil {
-		return nil, nil, time.Since(startTime), err
+		return nil, nil, nil, time.Since(startTime), err
 	}
 
 	if err := VerifyNoApplicationSets(targetApps); err != nil {
-		return nil, nil, time.Since(startTime), err
+		return nil, nil, nil, time.Since(startTime), err
 	}
 
 	// print how many applications are being rendered for each branch
@@ -68,13 +68,13 @@ func RenderApplicationsFromBothBranches(
 	apps := append(baseApps, targetApps...)
 
 	log.Debug().Msg("Applied manifest for both branches")
-	extractedBaseApps, extractedTargetApps, err := getResourcesFromApps(argocd, apps, timeout, maxConcurrency, prefix, deleteAfterProcessing, skipFailedApps)
+	extractedBaseApps, extractedTargetApps, renderReport, err := getResourcesFromApps(argocd, apps, timeout, maxConcurrency, prefix, deleteAfterProcessing, skipFailedApps)
 	if err != nil {
-		return nil, nil, time.Since(startTime), fmt.Errorf("failed to get resources: %w", err)
+		return nil, nil, nil, time.Since(startTime), fmt.Errorf("failed to get resources: %w", err)
 	}
 	log.Debug().Msg("Extracted manifests for both branches")
 
-	return extractedBaseApps, extractedTargetApps, time.Since(startTime), nil
+	return extractedBaseApps, extractedTargetApps, renderReport, time.Since(startTime), nil
 }
 
 // getResourcesFromApps extracts resources from Argo CD for a specific branch as ExtractedApp structs
@@ -86,7 +86,7 @@ func getResourcesFromApps(
 	prefix string,
 	deleteAfterProcessing bool,
 	skipFailedApps bool,
-) ([]ExtractedApp, []ExtractedApp, error) {
+) ([]ExtractedApp, []ExtractedApp, *RenderReport, error) {
 	startTime := time.Now()
 
 	// Get the set of known cluster-scoped resources for namespace normalization.
@@ -95,7 +95,7 @@ func getResourcesFromApps(
 	// without namespace normalization that the controller cache would normally provide
 	clusterScopedResources, err := argocd.K8sClient.GetListOfClusterScopedResources()
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to get list of cluster-scoped resources: %w", err)
+		return nil, nil, nil, fmt.Errorf("failed to get list of cluster-scoped resources: %w", err)
 	}
 
 	log.Info().Msgf("🤖 Rendering Applications (timeout in %d seconds)", timeout)
@@ -151,7 +151,7 @@ func getResourcesFromApps(
 				results <- appResult{
 					app:    ExtractedApp{},
 					source: app,
-					err:    fmt.Errorf("timeout reached before starting to render application: %s", app.GetLongName()),
+					err:    fmt.Errorf("%s: %s", errNeverStartedPrefix, app.GetLongName()),
 				}
 				<-sem
 				return
@@ -190,7 +190,7 @@ func getResourcesFromApps(
 
 	extractedBaseApps, extractedTargetApps, failedApps, firstError := collectAppResults(resultSlice, skipFailedApps)
 	if firstError != nil {
-		return nil, nil, firstError
+		return nil, nil, nil, firstError
 	}
 	if skipFailedApps && len(failedApps) > 0 {
 		for _, failure := range failedApps {
@@ -210,7 +210,8 @@ func getResourcesFromApps(
 	duration := time.Since(startTime)
 	log.Info().Msgf("🤖 Got all resources from %d applications from %s-branch and got %d from %s-branch in %s", len(extractedBaseApps), git.Base, len(extractedTargetApps), git.Target, duration.Round(time.Second))
 
-	return extractedBaseApps, extractedTargetApps, nil
+	report := buildRenderReport(failedApps, timeout, skipFailedApps, totalApps, int(renderedApps.Load()), len(extractedBaseApps), len(extractedTargetApps))
+	return extractedBaseApps, extractedTargetApps, report, nil
 }
 
 // appResult is the per-application outcome of one render worker.

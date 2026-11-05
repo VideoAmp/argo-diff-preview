@@ -90,6 +90,7 @@ var (
 	DefaultFailOnDuplicateGeneratedApplications = false
 	DefaultRepoServerAddress                    = ""
 	DefaultSkipFailedApps                       = false
+	DefaultFailuresReport                       = ""
 )
 
 // RawOptions holds the raw CLI/env inputs - used only for parsing
@@ -144,6 +145,7 @@ type RawOptions struct {
 	FailOnDuplicateGeneratedApplications bool   `mapstructure:"fail-on-duplicate-generated-applications"`
 	RepoServerAddress                    string `mapstructure:"repo-server-address"`
 	SkipFailedApps                       bool   `mapstructure:"skip-failed-apps"`
+	FailuresReport                       string `mapstructure:"failures-report"`
 }
 
 // Config is the final, validated, ready-to-use configuration
@@ -192,6 +194,7 @@ type Config struct {
 	FailOnDuplicateGeneratedApplications bool
 	RepoServerAddress                    string
 	SkipFailedApps                       bool
+	FailuresReport                       string
 
 	// Parsed/processed fields - no "parsed" prefix needed
 	FileRegex           *regexp.Regexp
@@ -292,6 +295,7 @@ func Parse() *Config {
 	viper.SetDefault("fail-on-duplicate-generated-applications", DefaultFailOnDuplicateGeneratedApplications)
 	viper.SetDefault("repo-server-address", DefaultRepoServerAddress)
 	viper.SetDefault("skip-failed-apps", DefaultSkipFailedApps)
+	viper.SetDefault("failures-report", DefaultFailuresReport)
 
 	// Basic flags
 	rootCmd.Flags().BoolP("debug", "d", false, "Activate debug mode")
@@ -355,6 +359,7 @@ func Parse() *Config {
 	rootCmd.Flags().Bool("fail-on-duplicate-generated-applications", DefaultFailOnDuplicateGeneratedApplications, "Fail when a single ApplicationSet generates multiple Applications with the same name")
 	rootCmd.Flags().String("repo-server-address", DefaultRepoServerAddress, "Address of the Argo CD repo server (host:port). Connects directly instead of port-forwarding. Requires --render-method=repo-server-api")
 	rootCmd.Flags().Bool("skip-failed-apps", DefaultSkipFailedApps, "Skip applications that fail to render instead of aborting: the diff covers every other application, each skipped one is logged, and a failed app is dropped from both branches (all-or-nothing per app)")
+	rootCmd.Flags().String("failures-report", DefaultFailuresReport, "Write a JSON per-application render report to this path after rendering: budget and tolerance header plus one record per failed application (name, branch, ApplicationSet file, failure phase never-started/timeout/error, full error) — consumers don't have to regex-parse the log. Requires --render-method=server-api")
 
 	// Check if version flag was specified directly
 	for _, arg := range os.Args[1:] {
@@ -444,6 +449,7 @@ func (o *RawOptions) ToConfig() (*Config, error) {
 		FailOnDuplicateGeneratedApplications: o.FailOnDuplicateGeneratedApplications,
 		RepoServerAddress:                    o.RepoServerAddress,
 		SkipFailedApps:                       o.SkipFailedApps,
+		FailuresReport:                       o.FailuresReport,
 	}
 
 	var err error
@@ -461,6 +467,11 @@ func (o *RawOptions) ToConfig() (*Config, error) {
 	cfg.RenderMethod, err = o.parseRenderMethod()
 	if err != nil {
 		return nil, fmt.Errorf("invalid render-method: %w", err)
+	}
+
+	// The report is produced by the server-api extraction path only
+	if cfg.FailuresReport != "" && cfg.RenderMethod != RenderMethodServerAPI {
+		return nil, fmt.Errorf("--failures-report requires --render-method=%s: the other extraction paths do not collect per-application outcomes", RenderMethodServerAPI)
 	}
 
 	// Parse file regex
@@ -827,6 +838,9 @@ func (o *Config) LogConfig() {
 	}
 	if o.SkipFailedApps {
 		log.Info().Msg("✨ - skip-failed-apps: true")
+	}
+	if o.FailuresReport != DefaultFailuresReport {
+		log.Info().Msgf("✨ - failures-report: %s", o.FailuresReport)
 	}
 	if o.Title != DefaultTitle {
 		log.Info().Msgf("✨ - title: %s", o.Title)

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -317,6 +318,7 @@ func run(cfg *Config) error {
 
 	var baseManifests, targetManifests []extract.ExtractedApp
 	var extractDuration time.Duration
+	var renderReport *extract.RenderReport
 
 	if cfg.RenderMethod == RenderMethodRepoServerAPI {
 
@@ -351,7 +353,7 @@ func run(cfg *Config) error {
 	} else {
 		// Extract resources from the cluster based on each branch, passing the manifests directly
 		deleteAfterProcessing := !cfg.CreateCluster
-		baseManifests, targetManifests, extractDuration, err = extract.RenderApplicationsFromBothBranches(
+		baseManifests, targetManifests, renderReport, extractDuration, err = extract.RenderApplicationsFromBothBranches(
 			argocd,
 			cfg.Timeout,
 			cfg.Concurrency,
@@ -365,6 +367,14 @@ func run(cfg *Config) error {
 	if err != nil {
 		log.Error().Msg("❌ Failed to extract resources")
 		return err
+	}
+
+	// Structured per-application render report for consumers that shouldn't
+	// have to regex-parse the log (--failures-report).
+	if cfg.FailuresReport != "" && renderReport != nil {
+		if err := writeFailuresReport(cfg.FailuresReport, renderReport); err != nil {
+			return err
+		}
 	}
 
 	// Create info box for storing run time information
@@ -475,5 +485,20 @@ func writeManifests(
 		log.Debug().Msgf("Wrote %d app manifests to %s", len(branchManifests), branchFilePath)
 	}
 
+	return nil
+}
+
+// writeFailuresReport writes the structured render report to disk. Written
+// after the render completes (the output folder is only cleared at startup),
+// so a path inside --output-folder is safe and rides any artifact upload.
+func writeFailuresReport(path string, report *extract.RenderReport) error {
+	data, err := json.MarshalIndent(report, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal render report: %w", err)
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		return fmt.Errorf("failed to write render report to %s: %w", path, err)
+	}
+	log.Info().Msgf("📝 Wrote render report to %s (%d application failure(s))", path, len(report.Failures))
 	return nil
 }
